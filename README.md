@@ -93,40 +93,48 @@ Nos arquivos de teste isso recuperou 269 nós (84 textos) em um e 1.731 no outro
 
 ## Quebra de linha
 
-O Figma guarda em  onde cada linha visual começa e
+O Figma guarda em `derivedTextData.baselines` onde cada linha visual começa e
 termina, e o avanço vertical entre elas. O gerador usa isso: cada linha vira um
- com , e o  vem do avanço real
-medido pelo Figma, não recalculado a partir de .
+`<span class="ln">` com `white-space: pre`, e o `line-height` vem do avanço real
+medido pelo Figma, não recalculado a partir de `lineHeight` — as três unidades
+(PERCENT, RAW, PIXELS) e o arredondamento erram por pouco, e o erro multiplica
+pelo número de linhas.
 
 Sem isso quem decide a quebra é o navegador, que discorda do Figma por alguns
 pixels de métrica de fonte: uma palavra desce de linha, o bloco fica mais alto e
 empurra tudo abaixo. Medido: 438 de 438 textos passaram a ter exatamente o número
 de linhas do Figma, e o erro de altura no percentil 90 caiu de 23,6px para 6,2px.
 
-## Limitações conhecidas## Limitações conhecidas
+Junto veio o reset que faltava: `p` e headings carregavam a margem padrão do
+navegador (1em, proporcional à fonte — 39px num título de 39px). Em flexbox essa
+margem não colapsa, então cada texto empurrava o bloco seguinte. Era a causa dos
+deslocamentos de 41 a 81px que apareciam como "erro de posição".
+
+## Limitações conhecidas
 
 **Ícones vetoriais.** O traçado mora em `vectorNetworkBlob`, formato binário fechado
 do Figma sem decodificador público. Eles saem como caixas posicionadas e
 dimensionadas, com a cor certa, mas sem o path. Para obter o SVG é preciso a API do
 Figma com o arquivo na nuvem.
 
-**Texto quebra diferente do Figma.** O navegador e o Figma não concordam sobre onde
-uma linha termina, e onde há auto-layout uma linha a mais empurra o que está abaixo.
-Medido em dois arquivos (57 telas, 2.842 textos): 2 a 3% dos textos acabam
-encostando em outro bloco.
+**Largura do texto.** As linhas vêm quebradas do Figma, mas a largura de cada
+linha ainda depende da métrica da fonte do navegador. Onde a fonte não existe no
+Google Fonts (TT Commons, Switzer e afins), o fallback rende diferente e a linha
+sai mais larga ou mais estreita que o desenho. Não desloca nada na vertical —
+esse era o problema grave e acabou.
 
-Vale registrar a tentativa que não deu certo, porque o número engana: travar a
-altura de todo contêiner de auto-layout (em vez de `min-height`) leva o desvio de
-altura das telas de 29/41 para 40/41 dentro de 5%. Só que aí o texto que não cabe
-não tem para onde ir e cai por cima do vizinho — 18 das 21 sobreposições
-resultantes cobriam mais da metade do texto menor. A seção ficar mais alta que o
-desenho é o mal menor, então o `min-height` ficou.
-
-**Fontes fora do Google Fonts** (TT Commons, Switzer e afins) não carregam e caem no
-fallback, com métricas diferentes — o que piora o item acima.
+Sobra: 3 sobreposições em 795 textos no arquivo menor, 60 em 3.107 no maior
+(sendo 31 delas sobreposições que já existem no próprio design, como palavras
+empilhadas).
 
 **Ordem de camadas.** No Figma quem vem depois na lista de filhos fica por cima,
 sempre. Em CSS um irmão posicionado pinta acima de um irmão estático mesmo vindo
 antes, então onde há mistura a ordem se inverte e um retângulo de fundo sobe para
 cima do texto. O gerador devolve a ordem do Figma com `z-index` explícito nesses
-contêineres. Sobram poucos casos (26 textos em 41 telas no arquivo maior).
+contêineres.
+
+**Tentativa registrada que não deu certo:** travar a altura de todo contêiner de
+auto-layout (em vez de `min-height`) melhora o desvio de altura das telas, mas o
+texto que não cabe cai por cima do vizinho — 18 das 21 sobreposições resultantes
+cobriam mais da metade do texto menor. A seção ficar mais alta que o desenho é o
+mal menor.
