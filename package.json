@@ -1,0 +1,18 @@
+{
+  "name": "figma-extrator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "express": "^4.21.2",
+    "fzstd": "^0.1.1",
+    "kiwi-schema": "^0.5.0",
+    "multer": "^1.4.5-lts.1",
+    "pako": "^2.1.0",
+    "yauzl": "^3.2.0"
+  }
+}

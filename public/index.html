@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Extrator de .fig</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<header class="topo">
+  <div class="topo-marca">
+    <span class="logo" aria-hidden="true"></span>
+    <div>
+      <h1>Extrator de .fig</h1>
+      <p>Lê o binário do Figma offline e devolve HTML, CSS, imagens e a especificação de cada tela.</p>
+    </div>
+  </div>
+  <button type="button" id="btn-reiniciar" class="btn btn-fantasma" hidden>Novo arquivo</button>
+</header>
+
+<main>
+
+  <!-- ETAPA 1 ------------------------------------------------------------ -->
+  <section id="etapa-upload" class="painel">
+    <label for="input-arquivo" id="zona" class="zona">
+      <input type="file" id="input-arquivo" accept=".fig" hidden>
+      <span class="zona-icone" aria-hidden="true"></span>
+      <strong>Arraste o arquivo .fig aqui</strong>
+      <span class="zona-dica">ou clique para escolher · até 400 MB · nada sai da sua máquina</span>
+    </label>
+    <p id="erro-upload" class="erro" hidden></p>
+
+    <div id="progresso" class="progresso" hidden>
+      <div class="barra"><i></i></div>
+      <ul id="lista-etapas" class="etapas"></ul>
+    </div>
+  </section>
+
+  <!-- ETAPA 2 ------------------------------------------------------------ -->
+  <section id="etapa-analise" class="painel" hidden>
+
+    <div class="resumo-topo">
+      <img id="thumb" class="thumb" alt="" hidden>
+      <div class="resumo-dados">
+        <h2 id="nome-arquivo">—</h2>
+        <ul id="stats" class="stats"></ul>
+      </div>
+    </div>
+
+    <div class="cartao-escala" id="cartao-escala">
+      <div class="cartao-cabecalho">
+        <h3>Escala do design</h3>
+        <span id="selo-escala" class="selo"></span>
+      </div>
+      <p id="texto-escala" class="cartao-texto"></p>
+      <table class="tabela-escala">
+        <thead><tr><th>Fator</th><th>Largura de design</th><th>Encaixe das medidas</th><th></th></tr></thead>
+        <tbody id="corpo-escala"></tbody>
+      </table>
+      <label class="campo-escala">
+        Fator aplicado
+        <input type="number" id="input-escala" step="0.0001" min="0.1" max="10">
+        <span class="campo-dica">Todas as medidas são divididas por este número antes de virar CSS.</span>
+      </label>
+    </div>
+
+    <div class="grade-opcoes">
+      <fieldset class="cartao">
+        <legend>Modo de geração</legend>
+        <label class="radio">
+          <input type="radio" name="modo" value="fluid" checked>
+          <span><strong>Fluido — código de produção</strong>
+          <small>Onde o Figma tem auto-layout vira flexbox de verdade, com gap e padding; o resto é ancorado por coordenada. Classes semânticas, tokens em custom properties.
+          <em>Medido neste arquivo: desvio médio de 19px na vertical e 23px na horizontal.</em></small></span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="modo" value="absolute">
+          <span><strong>Absoluto — cópia fiel</strong>
+          <small>Cada bloco ancorado na coordenada exata do Figma. Serve para conferir o design ou fatiar depois.
+          <em>Medido neste arquivo: 100% dos blocos dentro de 2px na horizontal, 0,00% de desvio na altura total.</em></small></span>
+        </label>
+      </fieldset>
+
+      <fieldset class="cartao">
+        <legend>Saída</legend>
+        <label class="campo">
+          Viewport mínima
+          <input type="number" id="input-viewport" value="360" min="240" max="1024" step="10">
+          <span class="campo-dica">Piso do clamp(). Abaixo disso as medidas param de encolher.</span>
+        </label>
+        <label class="radio" style="margin-top:12px">
+          <input type="checkbox" id="chk-bruto">
+          <span><strong>Incluir o JSON bruto</strong><small>Saída completa do decodificador kiwi. Costuma passar de 40 MB.</small></span>
+        </label>
+      </fieldset>
+    </div>
+
+    <div class="cartao">
+      <div class="cartao-cabecalho">
+        <h3>Telas</h3>
+        <div class="acoes-selecao">
+          <button type="button" class="link" data-sel="paginas">Só páginas</button>
+          <button type="button" class="link" data-sel="todas">Todas</button>
+          <button type="button" class="link" data-sel="nenhuma">Nenhuma</button>
+        </div>
+      </div>
+      <div id="lista-telas" class="lista-telas"></div>
+    </div>
+
+    <div class="rodape-acoes">
+      <button type="button" id="btn-exportar" class="btn btn-principal">Gerar exportação</button>
+      <span id="status-export" class="status"></span>
+    </div>
+  </section>
+
+  <!-- ETAPA 3 ------------------------------------------------------------ -->
+  <section id="etapa-resultado" class="painel" hidden>
+    <div class="cartao-cabecalho">
+      <h3>Exportação pronta</h3>
+      <a id="btn-download" class="btn btn-principal" href="#" download>Baixar .zip</a>
+    </div>
+    <p id="texto-resultado" class="cartao-texto"></p>
+
+    <div class="resultado-grade">
+      <nav id="abas-telas" class="abas" aria-label="Telas exportadas"></nav>
+      <div class="visualizador">
+        <div class="visualizador-barra">
+          <div class="larguras" role="group" aria-label="Largura da prévia">
+            <button type="button" class="largura ativa" data-w="1440">1440</button>
+            <button type="button" class="largura" data-w="1024">1024</button>
+            <button type="button" class="largura" data-w="768">768</button>
+            <button type="button" class="largura" data-w="390">390</button>
+          </div>
+          <a id="abrir-nova" class="link" href="#" target="_blank" rel="noopener">Abrir em nova aba</a>
+        </div>
+        <div class="moldura"><iframe id="preview" title="Prévia da tela"></iframe></div>
+      </div>
+    </div>
+
+    <div id="detalhe-tela" class="cartao"></div>
+  </section>
+
+</main>
+
+<script src="./app.js"></script>
+</body>
+</html>
