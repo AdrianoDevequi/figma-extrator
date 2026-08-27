@@ -256,6 +256,118 @@ function fontWeightFromStyle(style) {
   return 400;
 }
 
+// --------------------------------------------- instâncias de componente
+
+/**
+ * Materializa o conteúdo das instâncias de componente.
+ *
+ * No .fig uma INSTANCE não guarda filhos: ela aponta para um SYMBOL via
+ * `symbolData.symbolID` e carrega só as diferenças em `symbolOverrides`. Sem
+ * resolver isso, todo componente reutilizado (card, botão, item de lista) sai
+ * como uma caixa vazia.
+ *
+ * A ligação entre a instância e um nó lá dentro do símbolo é o `overrideKey`:
+ * cada descendente do símbolo tem um, e `guidPath.guids` é a trilha desses
+ * overrideKeys da raiz do componente até o nó.
+ *
+ * Devolve a lista de nós crus acrescida dos clones.
+ */
+function expandInstances(rawNodes, maxDepth) {
+  const limit = maxDepth === undefined ? 8 : maxDepth;
+  const key = (x) => (x ? `${x.sessionID}:${x.localID}` : null);
+  const byGuid = new Map(rawNodes.map((n) => [key(n.guid), n]));
+
+  const childrenOf = new Map();
+  for (const n of rawNodes) {
+    const p = n.parentIndex && n.parentIndex.guid ? key(n.parentIndex.guid) : null;
+    if (!p) continue;
+    if (!childrenOf.has(p)) childrenOf.set(p, []);
+    childrenOf.get(p).push(n);
+  }
+  for (const list of childrenOf.values()) {
+    list.sort((a, b) => {
+      const x = (a.parentIndex && a.parentIndex.position) || '';
+      const y = (b.parentIndex && b.parentIndex.position) || '';
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+  }
+
+  const clones = [];
+  let nextId = 1;
+  // sessionID -1 não existe em arquivo real, então clones nunca colidem
+  const newGuid = () => ({ sessionID: -1, localID: nextId++ });
+
+  // Propriedades de controle: copiá-las para o clone quebraria a árvore.
+  const ESTRUTURAIS = new Set(['guid', 'parentIndex', 'guidPath', 'overrideKey']);
+
+  function aplicar(destino, fonte) {
+    if (!fonte) return;
+    for (const [k, v] of Object.entries(fonte)) {
+      if (ESTRUTURAIS.has(k) || v === undefined) continue;
+      destino[k] = v;
+    }
+  }
+
+  function expandir(instancia, profundidade, symbolsNaPilha) {
+    const dados = instancia.symbolData;
+    const symbolGuid = dados && dados.symbolID ? key(dados.symbolID) : null;
+    if (!symbolGuid) return;
+    // Componente que contém a si mesmo entraria em recursão infinita.
+    if (profundidade > limit || symbolsNaPilha.has(symbolGuid)) return;
+    const symbol = byGuid.get(symbolGuid);
+    if (!symbol) return;
+
+    const overrides = new Map();
+    for (const o of dados.symbolOverrides || []) {
+      if (o.guidPath && o.guidPath.guids) overrides.set(o.guidPath.guids.map(key).join('/'), o);
+    }
+    const derivados = new Map();
+    for (const d of instancia.derivedSymbolData || []) {
+      if (d.guidPath && d.guidPath.guids) derivados.set(d.guidPath.guids.map(key).join('/'), d);
+    }
+
+    const pilha = new Set(symbolsNaPilha).add(symbolGuid);
+    const novasInstancias = [];
+
+    (function clonar(origemGuid, paiClonado, trilha) {
+      for (const filho of childrenOf.get(origemGuid) || []) {
+        const ok = filho.overrideKey ? key(filho.overrideKey) : null;
+        const trilhaFilho = ok ? trilha.concat(ok) : trilha;
+        const caminho = trilhaFilho.join('/');
+
+        const clone = Object.assign({}, filho);
+        clone.guid = newGuid();
+        clone.parentIndex = {
+          guid: paiClonado,
+          position: (filho.parentIndex && filho.parentIndex.position) || '',
+        };
+        // O override troca propriedades (cor, texto, tamanho); o derivado traz
+        // a geometria já resolvida para esta instância.
+        aplicar(clone, overrides.get(caminho));
+        const d = derivados.get(caminho);
+        if (d) {
+          if (d.size) clone.size = d.size;
+          if (d.transform) clone.transform = d.transform;
+        }
+        clone.__deInstancia = true;
+        clones.push(clone);
+        if (clone.type === 'INSTANCE' && clone.symbolData) {
+          novasInstancias.push(clone);
+        }
+        clonar(key(filho.guid), clone.guid, trilhaFilho);
+      }
+    })(symbolGuid, instancia.guid, []);
+
+    for (const aninhada of novasInstancias) expandir(aninhada, profundidade + 1, pilha);
+  }
+
+  for (const n of rawNodes) {
+    if (n.type === 'INSTANCE' && n.symbolData) expandir(n, 0, new Set());
+  }
+
+  return rawNodes.concat(clones);
+}
+
 // --------------------------------------------------------------- nós
 
 const CONTAINER_TYPES = new Set(['FRAME', 'GROUP', 'INSTANCE', 'SYMBOL', 'COMPONENT', 'SECTION']);
@@ -299,6 +411,40 @@ function buildNode(n) {
     ];
   } else if (n.cornerRadius) {
     node.cornerRadius = n.cornerRadius;
+  }
+
+  // Auto-layout em grade (recurso mais novo do Figma). O modelo é o mesmo do
+  // CSS Grid: uma lista ordenada de trilhas com tamanho FLEX (fr) ou FIXED,
+  // e cada filho ancorado numa trilha de linha e numa de coluna.
+  if (n.stackMode === 'GRID') {
+    const trilhas = (lista, sizing) => {
+      const ordem = ((lista && lista.entries) || [])
+        .slice()
+        .sort((a, b) => (a.position < b.position ? -1 : a.position > b.position ? 1 : 0))
+        .map((e) => guidOf(e.id));
+      const tamanhos = new Map();
+      for (const e of (sizing && sizing.entries) || []) {
+        const t = e.trackSize && e.trackSize.maxSizing;
+        if (t) tamanhos.set(guidOf(e.id), { type: t.type, value: t.value });
+      }
+      return ordem.map((id) => ({ id, size: tamanhos.get(id) || { type: 'AUTO' } }));
+    };
+    node.grid = {
+      columns: trilhas(n.gridColumns, n.gridColumnsSizing),
+      rows: trilhas(n.gridRows, n.gridRowsSizing),
+      columnGap: n.gridColumnGap || 0,
+      rowGap: n.gridRowGap || 0,
+    };
+  }
+  if (n.gridRowAnchor || n.gridColumnAnchor) {
+    node.gridAnchor = {
+      row: guidOf(n.gridRowAnchor),
+      column: guidOf(n.gridColumnAnchor),
+      rowSpan: n.gridRowSpan || 1,
+      columnSpan: n.gridColumnSpan || 1,
+      verticalAlign: n.gridChildVerticalAlign,
+      horizontalAlign: n.gridChildHorizontalAlign,
+    };
   }
 
   // Auto-layout
@@ -352,7 +498,8 @@ function buildNode(n) {
 
 function analyze(message, options) {
   const opts = options || {};
-  const rawNodes = message.nodeChanges || [];
+  const originais = message.nodeChanges || [];
+  const rawNodes = opts.expandirInstancias === false ? originais : expandInstances(originais);
   const nodes = rawNodes.map(buildNode);
   const byGuid = new Map(nodes.map((n) => [n.guid, n]));
 
@@ -410,10 +557,31 @@ function analyze(message, options) {
 
   const scale = detectScale(screens, nodes);
 
-  // Duplicatas: telas com mesmo nome e mesmas dimensões
+  // Duplicatas.
+  //
+  // Nome e dimensões iguais não bastam: é comum haver duas versões da mesma
+  // página, com o mesmo nome e tamanho e conteúdos diferentes. Marcar a
+  // segunda como duplicada faria a interface desmarcá-la e o usuário exportaria
+  // a versão errada. Então a assinatura inclui o conteúdo de texto.
+  const assinatura = (guid) => {
+    const partes = [];
+    const visit = (g) => {
+      const n = byGuid.get(g);
+      if (!n) return;
+      if (n.type === 'TEXT' && n.text) partes.push(n.text.trim());
+      for (const c of childrenOf.get(g) || []) visit(c.guid);
+    };
+    visit(guid);
+    const texto = partes.join(' ');
+    // hash barato só para não guardar a página inteira em memória
+    let h = 5381;
+    for (let i = 0; i < texto.length; i++) h = ((h * 33) ^ texto.charCodeAt(i)) >>> 0;
+    return `${h.toString(16)}:${partes.length}`;
+  };
+
   const seen = new Map();
   for (const s of screens) {
-    const key = `${s.name}|${s.width}x${s.height}`;
+    const key = `${s.name}|${s.width}x${s.height}|${s.nodeCount}|${assinatura(s.guid)}`;
     if (seen.has(key)) s.duplicateOf = seen.get(key);
     else seen.set(key, s.guid);
   }
@@ -432,6 +600,8 @@ function analyze(message, options) {
     scale,
     stats: {
       totalNodes: nodes.length,
+      nosOriginais: originais.length,
+      nosDeInstancia: rawNodes.length - originais.length,
       byType: nodes.reduce((acc, n) => ((acc[n.type] = (acc[n.type] || 0) + 1), acc), {}),
       imageFills: nodes.reduce(
         (acc, n) => acc + (n.fills || []).filter((f) => f.type === 'IMAGE' && f.imageHash).length,

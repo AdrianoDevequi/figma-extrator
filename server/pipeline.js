@@ -188,10 +188,16 @@ function exportScreens(parsed, options) {
 
   for (const s of screens) {
     const tree = screenTree(analysis, s.guid);
+    // O sufixo numérico precisa procurar um nome realmente livre: uma tela
+    // chamada "Home 2" já vira "home-2", que era exatamente o sufixo dado à
+    // segunda "Home" — as duas escreviam na mesma pasta e uma sumia.
     let base = slugify(s.name) || 'tela';
-    const n = usedNames.get(base) || 0;
-    usedNames.set(base, n + 1);
-    if (n) base = `${base}-${n + 1}`;
+    if (usedNames.has(base)) {
+      let i = 2;
+      while (usedNames.has(`${base}-${i}`)) i++;
+      base = `${base}-${i}`;
+    }
+    usedNames.set(base, true);
 
     const generated = generateScreen(tree, {
       scaleFactor,

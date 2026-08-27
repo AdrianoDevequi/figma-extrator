@@ -74,12 +74,35 @@ Quando um texto mistura fontes ou cores no meio da frase, o nó traz
 O analisador agrupa caracteres consecutivos de mesmo id para achar onde cada trecho
 começa e termina, e emite um `<span>` por trecho — senão os destaques se perdem.
 
-## Limitação conhecida
+## Componentes
 
-Ícones vetoriais guardam o traçado em `vectorNetworkBlob`, formato binário fechado
+Uma `INSTANCE` não guarda filhos no `.fig`: ela aponta para um `SYMBOL` e carrega só
+as diferenças em `symbolOverrides`. Sem resolver isso, todo componente reutilizado
+(card, botão, item de lista) sai como caixa vazia. O elo entre a instância e um nó
+lá dentro é o `overrideKey` — cada descendente do símbolo tem um, e `guidPath.guids`
+é a trilha desses overrideKeys. O analisador materializa essa árvore, aplica os
+overrides e a geometria já resolvida de `derivedSymbolData`.
+
+Nos arquivos de teste isso recuperou 269 nós (84 textos) em um e 1.731 no outro.
+
+## Limitações conhecidas
+
+**Ícones vetoriais.** O traçado mora em `vectorNetworkBlob`, formato binário fechado
 do Figma sem decodificador público. Eles saem como caixas posicionadas e
 dimensionadas, com a cor certa, mas sem o path. Para obter o SVG é preciso a API do
 Figma com o arquivo na nuvem.
+
+**Texto quebra diferente do Figma.** O navegador e o Figma não concordam sobre onde
+uma linha termina. Onde há auto-layout a altura vem do conteúdo, então uma linha a
+mais empurra o que está abaixo. Medido: cerca de 1% dos pares de texto se
+sobrepõem. O modo absoluto não sofre disso.
+
+**Fontes fora do Google Fonts** (TT Commons, Switzer e afins) não carregam e caem no
+fallback, o que muda as métricas e piora o item acima.
+
+**Seções em grade com trilhas de tamanho automático** ainda podem crescer além do
+desenho — na amostra, 3 de 12 telas de um arquivo ficaram acima de 5% de desvio na
+altura.
 
 ## Estrutura
 

@@ -34,6 +34,19 @@ function slugify(name) {
 }
 
 /**
+ * Garante um identificador CSS válido.
+ *
+ * Um seletor não pode começar com dígito nem com hífen seguido de dígito:
+ * uma camada chamada "02_Home" viraria `.02-home`, que o navegador descarta —
+ * a regra inteira some e o elemento fica sem estilo nenhum.
+ */
+function safeClass(name) {
+  if (!name) return 'box';
+  if (/^-?\d/.test(name)) return `n${name}`;
+  return name;
+}
+
+/**
  * Classe semântica: prefere o papel do nó ao nome da camada do Figma.
  * "Frame 140" vira "section", "Header" continua "header".
  */
@@ -247,20 +260,29 @@ function textDeclarations(node, ctx) {
   }
   if (node.fontWeight && node.fontWeight !== 400) decls.push(['font-weight', String(node.fontWeight)]);
   if (node.italic) decls.push(['font-style', 'italic']);
-  if (node.lineHeight) {
-    if (node.lineHeight.units === 'PERCENT') {
-      decls.push(['line-height', String(round(node.lineHeight.value / 100, 3))]);
-    } else if (node.lineHeight.value) {
-      const ratio = node.fontSize ? node.lineHeight.value / node.fontSize : null;
-      decls.push(['line-height', ratio ? String(round(ratio, 3)) : `${round(node.lineHeight.value / f, 2)}px`]);
+  // O Figma tem três unidades de entrelinha e elas significam coisas diferentes:
+  //   PERCENT -> porcentagem do tamanho da fonte (140 = 1.4)
+  //   RAW     -> multiplicador direto (1.1 = 1.1)
+  //   PIXELS  -> altura absoluta da linha
+  // Tratar RAW como pixels dividia 1.1 pelo tamanho da fonte e produzia uma
+  // entrelinha perto de zero: as linhas do título caíam umas sobre as outras.
+  if (node.lineHeight && node.lineHeight.value) {
+    const { value, units } = node.lineHeight;
+    if (units === 'PERCENT') {
+      decls.push(['line-height', String(round(value / 100, 3))]);
+    } else if (units === 'RAW') {
+      decls.push(['line-height', String(round(value, 3))]);
+    } else if (node.fontSize) {
+      decls.push(['line-height', String(round(value / node.fontSize, 3))]);
+    } else {
+      decls.push(['line-height', `${round(value / f, 2)}px`]);
     }
   }
   if (node.letterSpacing && node.letterSpacing.value) {
-    if (node.letterSpacing.units === 'PERCENT') {
-      decls.push(['letter-spacing', `${round(node.letterSpacing.value / 100, 4)}em`]);
-    } else {
-      decls.push(['letter-spacing', `${round(node.letterSpacing.value / f, 3)}px`]);
-    }
+    const { value, units } = node.letterSpacing;
+    if (units === 'PERCENT') decls.push(['letter-spacing', `${round(value / 100, 4)}em`]);
+    else if (units === 'RAW') decls.push(['letter-spacing', `${round(value, 4)}em`]);
+    else decls.push(['letter-spacing', `${round(value / f, 3)}px`]);
   }
   if (node.textAlign && node.textAlign !== 'LEFT') {
     decls.push(['text-align', TEXT_ALIGN[node.textAlign] || 'left']);
@@ -271,6 +293,16 @@ function textDeclarations(node, ctx) {
   if (node.textDecoration === 'UNDERLINE') decls.push(['text-decoration', 'underline']);
   else if (node.textDecoration === 'STRIKETHROUGH') decls.push(['text-decoration', 'line-through']);
 
+  // No Figma, WIDTH_AND_HEIGHT quer dizer que a caixa cresce com o texto: ele
+  // nunca quebra linha. Se a largura do desenho for imposta aqui, a frase
+  // quebra em duas linhas e invade o bloco de baixo. É a causa mais comum de
+  // texto sobreposto em títulos escritos linha a linha.
+  if (node.textAutoResize === 'WIDTH_AND_HEIGHT') {
+    decls.push(['white-space', 'nowrap']);
+    decls.push(['width', 'max-content']);
+    decls.push(['max-width', 'none']);
+  }
+
   const fill = (node.fills || []).find((x) => x.type === 'SOLID' && x.color);
   if (fill) decls.push(['color', fill.color]);
   return decls;
@@ -280,7 +312,25 @@ function layoutDeclarations(node, parent, ctx, ownStrategy) {
   const decls = [];
   const f = ctx.scaleFactor;
 
-  if (node.layout) {
+  // Grade do Figma vira CSS Grid de verdade. Tratá-la como coluna empilharia
+  // os itens um sob o outro e a altura da seção estouraria várias vezes.
+  if (node.grid) {
+    const trilha = (t) => {
+      if (!t.size || t.size.type === 'AUTO') return 'auto';
+      if (t.size.type === 'FLEX') return `${round(t.size.value || 1, 3)}fr`;
+      return ctx.fluid((t.size.value || 0) / f);
+    };
+    decls.push(['display', 'grid']);
+    if (node.grid.columns.length) {
+      decls.push(['grid-template-columns', node.grid.columns.map(trilha).join(' ')]);
+    }
+    if (node.grid.rows.length) {
+      decls.push(['grid-template-rows', node.grid.rows.map(trilha).join(' ')]);
+    }
+    const rg = ctx.fluid((node.grid.rowGap || 0) / f);
+    const cg = ctx.fluid((node.grid.columnGap || 0) / f);
+    if (node.grid.rowGap || node.grid.columnGap) decls.push(['gap', `${rg} ${cg}`]);
+  } else if (node.layout) {
     decls.push(['display', 'flex']);
     decls.push(['flex-direction', node.layout.mode === 'HORIZONTAL' ? 'row' : 'column']);
     if (node.layout.wrap === 'WRAP') decls.push(['flex-wrap', 'wrap']);
@@ -296,6 +346,23 @@ function layoutDeclarations(node, parent, ctx, ownStrategy) {
     }
   }
 
+  // Filho de grade: ancorado por id de trilha, não por ordem.
+  const ALINHA_GRADE = { MIN: 'start', CENTER: 'center', MAX: 'end', STRETCH: 'stretch' };
+  if (parent && parent.grid && node.gridAnchor) {
+    const indice = (trilhas, id) => {
+      const i = trilhas.findIndex((t) => t.id === id);
+      return i < 0 ? null : i + 1;
+    };
+    const col = indice(parent.grid.columns, node.gridAnchor.column);
+    const row = indice(parent.grid.rows, node.gridAnchor.row);
+    if (col) decls.push(['grid-column', node.gridAnchor.columnSpan > 1 ? `${col} / span ${node.gridAnchor.columnSpan}` : String(col)]);
+    if (row) decls.push(['grid-row', node.gridAnchor.rowSpan > 1 ? `${row} / span ${node.gridAnchor.rowSpan}` : String(row)]);
+    const va = ALINHA_GRADE[node.gridAnchor.verticalAlign];
+    const ha = ALINHA_GRADE[node.gridAnchor.horizontalAlign];
+    if (va) decls.push(['align-self', va]);
+    if (ha) decls.push(['justify-self', ha]);
+  }
+
   // Dimensões
   const size = node.size;
   if (!size) return decls;
@@ -305,7 +372,12 @@ function layoutDeclarations(node, parent, ctx, ownStrategy) {
   const hugsWidth = node.layout && (isHorizontal ? node.layout.primarySizing : node.layout.counterSizing) === 'RESIZE_TO_FIT';
   const fillsWidth = node.grow === 1 && isHorizontal;
 
-  if (fillsWidth) {
+  const emGrade = parent && parent.grid && node.gridAnchor;
+  if (emGrade) {
+    // Quem define a largura é a trilha da grade; fixar a do desenho brigaria
+    // com o `fr` e reintroduziria o estouro.
+    decls.push(['min-width', '0']);
+  } else if (fillsWidth) {
     decls.push(['flex', '1 1 0']);
     decls.push(['min-width', '0']);
   } else if (parentLayout && !isHorizontal && node.alignSelf === 'STRETCH') {
@@ -477,8 +549,7 @@ function generateScreen(tree, options) {
   const html = [];
 
   function classNameFor(node, role) {
-    let base = semanticClass(node, role);
-    if (!base) base = role;
+    let base = safeClass(semanticClass(node, role) || role);
     const count = usedClasses.get(base) || 0;
     usedClasses.set(base, count + 1);
     return count === 0 ? base : `${base}-${count + 1}`;
