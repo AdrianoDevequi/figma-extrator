@@ -8,6 +8,8 @@
  *   - "absolute": posicionamento absoluto fiel ao pixel, para conferência.
  */
 
+const { fontWeightFromStyle } = require('./analyze');
+
 const ESCAPE = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 
 function esc(s) {
@@ -270,7 +272,11 @@ function textDeclarations(node, ctx) {
   //   PIXELS  -> altura absoluta da linha
   // Tratar RAW como pixels dividia 1.1 pelo tamanho da fonte e produzia uma
   // entrelinha perto de zero: as linhas do título caíam umas sobre as outras.
-  if (node.lineHeight && node.lineHeight.value) {
+  if (ctx.usarLinhas && node.lineAdvance && node.textLines && node.textLines.length > 1) {
+    // Cada linha é um bloco com esta altura, então N linhas somam exatamente a
+    // altura do desenho.
+    decls.push(['line-height', ctx.fluid(node.lineAdvance / f)]);
+  } else if (node.lineHeight && node.lineHeight.value) {
     const { value, units } = node.lineHeight;
     if (units === 'PERCENT') {
       decls.push(['line-height', String(round(value / 100, 3))]);
@@ -449,6 +455,15 @@ function layoutDeclarations(node, parent, ctx, ownStrategy) {
       decls.push(['height', ctx.fluid(size.h / f)]);
     } else if (!conteudoDefineAltura) {
       decls.push(['min-height', ctx.fluid(size.h / f)]);
+    } else if (node.type !== 'TEXT' && node.layout) {
+      // Contêiner que abraça o conteúdo pode acabar mais CURTO que o desenho
+      // se algum filho render um pouco menor, e aí o que vem depois sobe. O
+      // piso impede encolher; crescer continua permitido.
+      decls.push(['min-height', ctx.fluid(size.h / f)]);
+      // No Figma essa caixa não tem folga, então o alinhamento do eixo
+      // principal não muda nada. Com o piso ela passa a ter folga, e um
+      // `center` ou `space-between` empurraria os filhos para longe do lugar.
+      if (node.layout.mode !== 'HORIZONTAL') decls.push(['justify-content', 'flex-start']);
     }
   }
 
@@ -544,27 +559,64 @@ function tagFor(node, role) {
   return 'div';
 }
 
-/** Texto com formatação mista vira <span> por trecho. */
+/** Estilo inline de um trecho de formatação mista. */
+function estiloDoTrecho(style, ctx) {
+  const parts = [];
+  if (style.fontSize) parts.push(`font-size:${ctx.fluid(style.fontSize / ctx.scaleFactor, { minPx: 12 })}`);
+  if (style.fontFamily) parts.push(`font-family:"${style.fontFamily}", sans-serif`);
+  if (style.fontStyle) {
+    const w = fontWeightFromStyle(style.fontStyle);
+    if (w && w !== 400) parts.push(`font-weight:${w}`);
+    if (/italic/i.test(style.fontStyle)) parts.push('font-style:italic');
+  }
+  if (style.color) parts.push(`color:${style.color}`);
+  if (style.textDecoration === 'UNDERLINE') parts.push('text-decoration:underline');
+  return parts.join(';');
+}
+
+/** Aplica os trechos de formatação mista a um pedaço [de, ate) do texto. */
+function trechosDoIntervalo(node, de, ate, ctx) {
+  const bruto = node.text.slice(de, ate);
+  if (!node.textRuns) return esc(bruto);
+  let out = '';
+  for (const run of node.textRuns) {
+    const a = Math.max(run.start, de);
+    const b = Math.min(run.end, ate);
+    if (a >= b) continue;
+    const pedaco = esc(node.text.slice(a, b));
+    if (!run.style) {
+      out += pedaco;
+      continue;
+    }
+    const css = estiloDoTrecho(run.style, ctx);
+    out += css ? `<span class="run" style="${css}">${pedaco}</span>` : pedaco;
+  }
+  return out || esc(bruto);
+}
+
+/**
+ * Conteúdo de um nó de texto.
+ *
+ * Quando o Figma informa onde cada linha quebra, cada linha vira um elemento
+ * próprio com `white-space: pre` — o navegador não reflui e a altura do bloco
+ * fica igual à do desenho. É o que impede uma palavra de descer de linha e
+ * empurrar a página inteira.
+ */
 function renderTextContent(node, ctx) {
+  if (ctx.usarLinhas && node.textLines && node.textLines.length) {
+    return node.textLines
+      .map((l) => {
+        // O Figma inclui na linha o espaço (ou a quebra) que a encerrou; manter
+        // esse rastro desalinharia texto centralizado.
+        let ate = l.end;
+        while (ate > l.start && /[\s\n]/.test(node.text[ate - 1])) ate--;
+        const conteudo = trechosDoIntervalo(node, l.start, ate, ctx);
+        return `<span class="ln">${conteudo || '&#8203;'}</span>`;
+      })
+      .join('');
+  }
   if (!node.textRuns) return esc(node.text).replace(/\n/g, '<br>');
-  return node.textRuns
-    .map((run) => {
-      if (!run.style) return esc(run.text).replace(/\n/g, '<br>');
-      const parts = [];
-      const s = run.style;
-      if (s.fontSize) parts.push(`font-size:${ctx.fluid(s.fontSize / ctx.scaleFactor, { minPx: 12 })}`);
-      if (s.fontFamily) parts.push(`font-family:"${s.fontFamily}", sans-serif`);
-      if (s.fontStyle) {
-        const w = require('./analyze').fontWeightFromStyle(s.fontStyle);
-        if (w && w !== 400) parts.push(`font-weight:${w}`);
-        if (/italic/i.test(s.fontStyle)) parts.push('font-style:italic');
-      }
-      if (s.color) parts.push(`color:${s.color}`);
-      if (s.textDecoration === 'UNDERLINE') parts.push('text-decoration:underline');
-      const style = parts.length ? ` style="${parts.join(';')}"` : '';
-      return `<span class="run"${style}>${esc(run.text).replace(/\n/g, '<br>')}</span>`;
-    })
-    .join('');
+  return trechosDoIntervalo(node, 0, node.text.length, ctx).replace(/\n/g, '<br>');
 }
 
 function generateScreen(tree, options) {
@@ -587,6 +639,7 @@ function generateScreen(tree, options) {
     smallThreshold: allSizes.length ? allSizes[allSizes.length - 1] : 12,
     imageFile: opts.imageFile || (() => null),
     rastreio: opts.rastreio !== false,
+    usarLinhas: opts.usarLinhas !== false,
     preferirFluxo: opts.preferirFluxo === true,
   };
 
@@ -800,6 +853,19 @@ body {
 }
 
 /*
+ * Zera as margens que o navegador dá de presente para p e headings.
+ * Elas são proporcionais ao tamanho da fonte (1em), então um titulo de 39px
+ * ganhava 39px de margem superior. Em flexbox a margem nao colapsa, entao
+ * cada texto empurrava o bloco seguinte para baixo. No Figma nao existe
+ * margem: o espacamento vem do gap e do padding do auto-layout.
+ */
+h1, h2, h3, h4, h5, h6, p, figure, blockquote, dl, dd {
+  margin: 0;
+}
+
+ul, ol { margin: 0; padding: 0; list-style: none; }
+
+/*
  * Contêiner de referência do design.
  * Todas as medidas fluidas estão em cqw (1% da largura daqui), então o layout
  * inteiro escala junto, em vez de o eixo horizontal descolar do vertical.
@@ -816,6 +882,15 @@ body {
 img { max-width: 100%; display: block; }
 
 button { font: inherit; border: none; background: none; cursor: pointer; }
+
+/*
+ * Uma linha de texto, quebrada onde o Figma quebrou.
+ * O white-space pre impede o navegador de refluir: a altura do bloco fica
+ * igual a do desenho e nenhuma palavra desce de linha empurrando o resto da
+ * pagina. Se a fonte do navegador for mais larga, a linha transborda na
+ * horizontal, o que nao desloca nada.
+ */
+.ln { display: block; white-space: pre; }
 
 ${rules.join('\n\n')}
 `;

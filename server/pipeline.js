@@ -203,6 +203,7 @@ function exportScreens(parsed, options) {
       scaleFactor,
       mode,
       minViewport: opts.minViewport || 360,
+      usarLinhas: opts.usarLinhas !== false,
       imageFile: (hash) => {
         const file = imageMap.get(hash);
         return file ? `./assets/images/${file}` : null;

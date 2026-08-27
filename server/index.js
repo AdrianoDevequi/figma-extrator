@@ -119,13 +119,14 @@ app.get('/api/run/:id/arvore/:guid', (req, res) => {
 app.post('/api/run/:id/exportar', (req, res) => {
   const run = runOr404(req, res);
   if (!run) return;
-  const { telas, escala, modo, viewportMin } = req.body || {};
+  const { telas, escala, modo, viewportMin, usarLinhas } = req.body || {};
   try {
     const out = exportScreens(run.parsed, {
       screens: Array.isArray(telas) ? telas : null,
       scaleFactor: escala ? Number(escala) : undefined,
       mode: modo === 'absolute' ? 'absolute' : 'fluid',
       minViewport: viewportMin ? Number(viewportMin) : 360,
+      usarLinhas: usarLinhas !== false,
     });
     run.lastExport = out;
     res.json({

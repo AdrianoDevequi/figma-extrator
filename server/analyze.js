@@ -337,6 +337,11 @@ function expandInstances(rawNodes, maxDepth) {
 
         const clone = Object.assign({}, filho);
         clone.guid = newGuid();
+        // Se o override troca o texto, as linhas calculadas para o texto
+        // original do símbolo não valem mais: descarta em vez de quebrar a
+        // frase nova nos pontos da antiga.
+        const ov = overrides.get(trilhaFilho.join('/'));
+        if (ov && ov.textData) delete clone.derivedTextData;
         clone.parentIndex = {
           guid: paiClonado,
           position: (filho.parentIndex && filho.parentIndex.position) || '',
@@ -492,6 +497,34 @@ function buildNode(n) {
     if (n.textAutoResize) node.textAutoResize = n.textAutoResize;
     const runs = buildTextRuns(n);
     if (runs) node.textRuns = runs;
+
+    // Onde cada linha visual começa e termina, já calculado pelo Figma.
+    //
+    // Sem isso, quem decide a quebra é o navegador, que discorda do Figma por
+    // alguns pixels de métrica de fonte: uma palavra desce para a linha
+    // seguinte, o bloco fica mais alto e empurra tudo abaixo. Com o intervalo
+    // de caracteres em mãos, cada linha vira um elemento próprio e a quebra
+    // deixa de ser um palpite.
+    //
+    // `lineHeight` aqui é a caixa natural da fonte; o avanço real entre linhas
+    // é a diferença dos `lineY`, que é o que o line-height do CSS reproduz.
+    const bl = n.derivedTextData && n.derivedTextData.baselines;
+    if (bl && bl.length) {
+      node.textLines = bl.map((b) => ({
+        start: b.firstCharacter,
+        end: b.endCharacter,
+        x: b.position ? b.position.x : 0,
+        top: b.lineY || 0,
+        width: b.width,
+      }));
+      // Avanço real entre linhas, medido pelo próprio Figma. É mais confiável
+      // que recalcular a partir de `lineHeight`: as três unidades (PERCENT,
+      // RAW, PIXELS) e o arredondamento fazem a conta fechar por pouco, e o
+      // erro multiplica pelo número de linhas.
+      if (bl.length > 1) {
+        node.lineAdvance = (bl[1].lineY || 0) - (bl[0].lineY || 0);
+      }
+    }
   }
 
   node.isContainer = CONTAINER_TYPES.has(node.type);

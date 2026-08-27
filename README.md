@@ -91,7 +91,19 @@ overrides e a geometria já resolvida de `derivedSymbolData`.
 
 Nos arquivos de teste isso recuperou 269 nós (84 textos) em um e 1.731 no outro.
 
-## Limitações conhecidas
+## Quebra de linha
+
+O Figma guarda em  onde cada linha visual começa e
+termina, e o avanço vertical entre elas. O gerador usa isso: cada linha vira um
+ com , e o  vem do avanço real
+medido pelo Figma, não recalculado a partir de .
+
+Sem isso quem decide a quebra é o navegador, que discorda do Figma por alguns
+pixels de métrica de fonte: uma palavra desce de linha, o bloco fica mais alto e
+empurra tudo abaixo. Medido: 438 de 438 textos passaram a ter exatamente o número
+de linhas do Figma, e o erro de altura no percentil 90 caiu de 23,6px para 6,2px.
+
+## Limitações conhecidas## Limitações conhecidas
 
 **Ícones vetoriais.** O traçado mora em `vectorNetworkBlob`, formato binário fechado
 do Figma sem decodificador público. Eles saem como caixas posicionadas e
