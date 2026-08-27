@@ -43,8 +43,14 @@ bruto/message.json       saída crua do decodificador (opcional, ~40 MB)
 | Uso | código de produção | conferência, cópia fiel |
 | Fidelidade medida* | 19px de desvio médio na vertical | 100% dos blocos dentro de 2px na horizontal |
 
-\* medido no arquivo de teste (11 telas, 1920px, 3.501 nós) comparando cada nó
-renderizado contra a coordenada original do Figma.
+\* medido no primeiro arquivo de teste (11 telas, 1920px, 3.501 nós) comparando cada
+nó renderizado contra a coordenada original do Figma.
+
+Além do posicionamento, o auto-layout do Figma é traduzido inteiro: pilhas viram
+flexbox, grades viram CSS Grid com as trilhas reais (`fr` e tamanhos fixos), e
+filhos marcados como `stackPositioning: ABSOLUTE` saem do fluxo e são ancorados por
+coordenada, como no Figma. Tratar uma grade como coluna triplicava a altura da
+seção; tratar um filho fora de fluxo como item de flex empurrava todos os irmãos.
 
 Em ambos os modos as medidas são fluidas: `clamp(mínimo, Ncqw, máximo)`, onde a
 unidade é `cqw` (1% da largura do contêiner raiz) e não `vw`. Com `vw`, depois que a
@@ -93,43 +99,22 @@ dimensionadas, com a cor certa, mas sem o path. Para obter o SVG é preciso a AP
 Figma com o arquivo na nuvem.
 
 **Texto quebra diferente do Figma.** O navegador e o Figma não concordam sobre onde
-uma linha termina. Onde há auto-layout a altura vem do conteúdo, então uma linha a
-mais empurra o que está abaixo. Medido: cerca de 1% dos pares de texto se
-sobrepõem. O modo absoluto não sofre disso.
+uma linha termina, e onde há auto-layout uma linha a mais empurra o que está abaixo.
+Medido em dois arquivos (57 telas, 2.842 textos): 2 a 3% dos textos acabam
+encostando em outro bloco.
+
+Vale registrar a tentativa que não deu certo, porque o número engana: travar a
+altura de todo contêiner de auto-layout (em vez de `min-height`) leva o desvio de
+altura das telas de 29/41 para 40/41 dentro de 5%. Só que aí o texto que não cabe
+não tem para onde ir e cai por cima do vizinho — 18 das 21 sobreposições
+resultantes cobriam mais da metade do texto menor. A seção ficar mais alta que o
+desenho é o mal menor, então o `min-height` ficou.
 
 **Fontes fora do Google Fonts** (TT Commons, Switzer e afins) não carregam e caem no
-fallback, o que muda as métricas e piora o item acima.
+fallback, com métricas diferentes — o que piora o item acima.
 
-**Seções em grade com trilhas de tamanho automático** ainda podem crescer além do
-desenho — na amostra, 3 de 12 telas de um arquivo ficaram acima de 5% de desvio na
-altura.
-
-## Estrutura
-
-```
-server/
-  index.js      HTTP: upload, exportação, preview, download
-  pipeline.js   orquestra as etapas e escreve a saída
-  analyze.js    árvore de nós, escala, tokens, trechos de texto
-  generate.js   HTML/CSS
-  unzip.js      abre o .fig (ZIP) em Node puro
-vendor/figma-parser/
-  scripts do skill sunyui/figma-parser (decodificação kiwi)
-public/
-  interface
-```
-
-## Sobre o parser
-
-A decodificação do binário kiwi usa os scripts de
-[sunyui/figma-parser](https://github.com/sunyui/figma-parser), incluídos em
-`vendor/`. Duas coisas foram feitas por fora deles:
-
-- **Abertura do ZIP**: o `extract_archive.cjs` chama o `unzip` do sistema, que não
-  existe no Windows fora do Git Bash. `server/unzip.js` faz isso em Node.
-- **Análise**: `server/analyze.js` relê o JSON decodificado em vez de usar o
-  `extract_layout.cjs`, por dois motivos — o script original arredonda posição e
-  tamanho com `Math.round` (o que estraga a conta ao dividir pelo fator de escala),
-  e o `hashToHex` dele exige `Array.isArray`, mas o hash de imagem vem como objeto
-  `{0:byte,...}`, então todos os preenchimentos de imagem eram descartados. No
-  arquivo de teste isso significava 0 imagens em vez de 151.
+**Ordem de camadas.** No Figma quem vem depois na lista de filhos fica por cima,
+sempre. Em CSS um irmão posicionado pinta acima de um irmão estático mesmo vindo
+antes, então onde há mistura a ordem se inverte e um retângulo de fundo sobe para
+cima do texto. O gerador devolve a ordem do Figma com `z-index` explícito nesses
+contêineres. Sobram poucos casos (26 textos em 41 telas no arquivo maior).

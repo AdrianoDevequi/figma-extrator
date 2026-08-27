@@ -465,6 +465,10 @@ function buildNode(n) {
       left: n.stackHorizontalPadding || 0,
     };
   }
+  // O Figma permite tirar um filho do fluxo do auto-layout e ancorá-lo por
+  // coordenada. Tratá-lo como item de flex faz ele ocupar espaço e empurrar
+  // todos os irmãos — some com o layout da seção inteira.
+  if (n.stackPositioning === 'ABSOLUTE') node.absoluteInStack = true;
   if (n.stackChildPrimaryGrow) node.grow = n.stackChildPrimaryGrow;
   if (n.stackChildAlignSelf && n.stackChildAlignSelf !== 'AUTO') node.alignSelf = n.stackChildAlignSelf;
   if (n.clipsContent !== undefined) node.clipsContent = n.clipsContent;

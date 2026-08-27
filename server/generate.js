@@ -298,9 +298,22 @@ function textDeclarations(node, ctx) {
   // quebra em duas linhas e invade o bloco de baixo. É a causa mais comum de
   // texto sobreposto em títulos escritos linha a linha.
   if (node.textAutoResize === 'WIDTH_AND_HEIGHT') {
+    // A caixa abraça o texto no Figma, então ela não quebra linha sozinha.
+    // Mas `max-content` deixa a largura a cargo da métrica da fonte do
+    // navegador, que costuma ser mais larga: "amo.da" pedia 917px de desenho e
+    // ocupava 1057px, invadindo os vizinhos. A caixa fica com a largura do
+    // desenho e, se a fonte for mais larga, é o texto que transborda — isso
+    // não desloca nada.
     decls.push(['white-space', 'nowrap']);
-    decls.push(['width', 'max-content']);
-    decls.push(['max-width', 'none']);
+    if (node.size && node.size.w) decls.push(['width', ctx.fluid(node.size.w / ctx.scaleFactor)]);
+  } else if (node.size && node.size.w) {
+    // Onde a frase quebra depende só da largura da caixa. Deixar essa largura
+    // ser um resultado do flex faz ela ficar alguns pixels menor que a do
+    // desenho, e alguns pixels bastam para jogar uma palavra para a linha
+    // seguinte — foi assim que "Happy clients worldwide" virou duas linhas com
+    // 134px em vez de 138px. Aqui a largura vem do desenho, como no Figma.
+    decls.push(['width', ctx.fluid(node.size.w / ctx.scaleFactor)]);
+    decls.push(['flex', 'none']);
   }
 
   const fill = (node.fills || []).find((x) => x.type === 'SOLID' && x.color);
@@ -393,16 +406,34 @@ function layoutDeclarations(node, parent, ctx, ownStrategy) {
   // erro empurra tudo que vem abaixo. Onde há auto-layout, quem manda é o
   // conteúdo, que é justamente o que o auto-layout significa.
   const dirigidoPeloDesenho = ownStrategy === 'flow' || ownStrategy === 'absolute';
-  const conteudoDefineAltura =
-    node.type === 'TEXT' ||
-    (node.layout && node.layout.mode === 'VERTICAL' && node.layout.primarySizing === 'RESIZE_TO_FIT');
 
+  // No Figma o padrão de um frame é altura travada; "abraçar o conteúdo" é o
+  // caso explícito (RESIZE_TO_FIT, às vezes com sufixo). O campo vem ausente
+  // quando é o padrão, então testar só pelo valor literal fazia a maioria dos
+  // frames virar min-height e crescer — o erro somava container a container.
+  // A altura mora no eixo primário quando a pilha é vertical e no secundário
+  // quando é horizontal.
+  const abraca = (v) => String(v || '').startsWith('RESIZE_TO_FIT');
+  const alturaAbracaConteudo = node.layout
+    ? node.layout.mode === 'HORIZONTAL'
+      ? abraca(node.layout.counterSizing)
+      : abraca(node.layout.primarySizing)
+    : false;
+  const conteudoDefineAltura = node.type === 'TEXT' || alturaAbracaConteudo;
+
+  // Contêiner de auto-layout fica com `min-height`, não com altura travada.
+  //
+  // Travar a altura deixa o desvio de altura das telas quase zerado, e foi
+  // tentador: 40 de 41 telas dentro de 5%. Mas quando o navegador quebra uma
+  // frase numa linha a mais, o texto não tem para onde ir e cai por cima do
+  // bloco vizinho. Medido: 18 das 21 sobreposições resultantes cobriam mais de
+  // metade do texto menor — o defeito é bem pior do que a seção ficar mais
+  // alta que o desenho. Deixar crescer é o mal menor.
   if (size.h) {
     if (dirigidoPeloDesenho && (node.children || []).length) {
       decls.push(['height', ctx.fluid(size.h / f)]);
     } else if (!conteudoDefineAltura) {
-      if (ctx.mode === 'absolute') decls.push(['height', ctx.fluid(size.h / f)]);
-      else decls.push(['min-height', ctx.fluid(size.h / f)]);
+      decls.push(['min-height', ctx.fluid(size.h / f)]);
     }
   }
 
@@ -555,7 +586,21 @@ function generateScreen(tree, options) {
     return count === 0 ? base : `${base}-${count + 1}`;
   }
 
-  function walk(node, parent, depth, indent, parentStrategy, previousSibling) {
+  /**
+   * O nó vai receber `position` diferente de `static`?
+   * Precisa bater com o que o walk realmente emite, porque é isso que decide
+   * se a ordem de pintura do Figma se inverte.
+   */
+  function seraPosicionado(node, parentStrategy) {
+    if (parentStrategy === 'absolute') return true;
+    if (node.absoluteInStack) return true;
+    const kids = (node.children || []).filter((c) => c.visible !== false);
+    if (!kids.length) return false;
+    if (kids.some((c) => c.absoluteInStack)) return true;
+    return (mode === 'absolute' ? 'absolute' : childLayoutStrategy(node, ctx.preferirFluxo)) === 'absolute';
+  }
+
+  function walk(node, parent, depth, indent, parentStrategy, previousSibling, zIndex) {
     if (node.visible === false) return;
     if (node.type === 'CANVAS' || node.type === 'DOCUMENT') return;
 
@@ -574,17 +619,21 @@ function generateScreen(tree, options) {
       decls.push(['position', 'relative']);
       decls.push(['width', '100%']);
       if (node.size) decls.push(['min-height', ctx.fluid(node.size.h / ctx.scaleFactor)]);
-    } else if (parentStrategy === 'absolute') {
+    } else if (parentStrategy === 'absolute' || node.absoluteInStack) {
       decls.push(...absoluteDeclarations(node, parent, ctx));
     } else if (parentStrategy === 'flow') {
       decls.push(...flowDeclarations(node, parent, ctx, previousSibling));
     }
 
+    const foraDoFluxo = node.absoluteInStack && parentStrategy !== 'absolute';
     const layoutDecls = layoutDeclarations(node, parent, ctx, strategy);
+    // Propriedades que só fazem sentido para um item participando do fluxo.
+    const DE_ITEM_FLEX = new Set(['flex', 'align-self', 'justify-self', 'grid-column', 'grid-row', 'margin-top', 'margin-left']);
     for (const [k, v] of layoutDecls) {
       // Em absoluto/fluxo a dimensão já saiu em % do pai; não sobrescreve.
-      if ((k === 'width' || k === 'height') && parentStrategy !== 'flex' && parentStrategy !== null && !isRoot) continue;
+      if ((k === 'width' || k === 'height') && (foraDoFluxo || (parentStrategy !== 'flex' && parentStrategy !== null)) && !isRoot) continue;
       if (isRoot && (k === 'width' || k === 'min-height' || k === 'height' || k === 'max-width')) continue;
+      if (foraDoFluxo && DE_ITEM_FLEX.has(k)) continue;
       decls.push([k, v]);
     }
 
@@ -598,8 +647,31 @@ function generateScreen(tree, options) {
     // Filhos absolutos precisam de um bloco de contenção no pai. Um elemento
     // já posicionado em absoluto ganha isso de graça — declarar `relative`
     // aqui sobrescreveria o `absolute` e jogaria o nó de volta no fluxo.
-    const jaPosicionado = parentStrategy === 'absolute';
-    if (strategy === 'absolute' && !isRoot && !jaPosicionado) decls.push(['position', 'relative']);
+    const jaPosicionado = parentStrategy === 'absolute' || foraDoFluxo;
+    // Um contêiner de auto-layout também vira bloco de contenção quando algum
+    // filho seu foi tirado do fluxo — senão esse filho ancora num ancestral
+    // distante e vai parar longe do lugar.
+    const filhosVisiveis = (node.children || []).filter((c) => c.visible !== false);
+    const temFilhoForaDoFluxo = filhosVisiveis.some((c) => c.absoluteInStack);
+    // Só quem tem filhos precisa virar bloco de contenção. Marcar uma folha
+    // como `relative` a tornaria posicionada e ela passaria a pintar acima dos
+    // irmãos seguintes, invertendo a ordem de camadas do Figma.
+    const precisaContencao = (strategy === 'absolute' && filhosVisiveis.length > 0) || temFilhoForaDoFluxo;
+    if (precisaContencao && !isRoot && !jaPosicionado) {
+      decls.push(['position', 'relative']);
+    }
+
+    // Ordem de pintura.
+    //
+    // No Figma quem vem depois na lista de filhos fica por cima, sempre. Em CSS
+    // um irmão posicionado pinta acima de um irmão estático mesmo vindo antes.
+    // Onde há mistura, a ordem se inverte e um retângulo de fundo sobe para
+    // cima do texto. O z-index explícito devolve a ordem do Figma.
+    if (zIndex !== undefined) {
+      decls.push(['z-index', String(zIndex)]);
+      const posicionado = decls.some(([k, v]) => k === 'position' && v !== 'static');
+      if (!posicionado) decls.push(['position', 'relative']);
+    }
 
     // Deduplica mantendo a última declaração de cada propriedade
     const seen = new Map();
@@ -628,7 +700,14 @@ function generateScreen(tree, options) {
     const ordered = strategy === 'flow'
       ? kids.slice().sort((a, b) => (a.position ? a.position.y : 0) - (b.position ? b.position.y : 0))
       : kids;
-    ordered.forEach((c, i) => walk(c, node, depth + 1, indent + 1, strategy, ordered[i - 1]));
+    // Só vale numerar as camadas quando há mistura de posicionado e estático:
+    // se todos forem de um tipo só, a ordem do DOM já reproduz o Figma.
+    const posicionados = ordered.map((c) => seraPosicionado(c, strategy));
+    const misturado =
+      ordered.length > 1 && posicionados.some(Boolean) && posicionados.some((p) => !p);
+    ordered.forEach((c, i) =>
+      walk(c, node, depth + 1, indent + 1, strategy, ordered[i - 1], misturado ? i + 1 : undefined)
+    );
     html.push(`${pad}</${tag}>`);
   }
 
