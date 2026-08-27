@@ -199,6 +199,10 @@ const TEXT_ALIGN = { LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 
 
 function backgroundDeclarations(node, ctx) {
   const decls = [];
+  // Num nó de texto o fill é a cor da letra, não um fundo. Aplicá-lo como
+  // background pinta um retângulo sólido exatamente da cor do texto: a frase
+  // some dentro do próprio bloco. Quem trata o fill de texto é textDeclarations.
+  if (node.type === 'TEXT') return decls;
   const fills = (node.fills || []).filter((f) => f.opacity !== 0);
   if (!fills.length) return decls;
   // O Figma pinta de baixo para cima; em CSS a primeira camada fica por cima.
@@ -317,7 +321,18 @@ function textDeclarations(node, ctx) {
   }
 
   const fill = (node.fills || []).find((x) => x.type === 'SOLID' && x.color);
-  if (fill) decls.push(['color', fill.color]);
+  if (fill) {
+    decls.push(['color', fill.color]);
+  } else {
+    // Texto com preenchimento em gradiente: recorta o gradiente na letra.
+    const grad = (node.fills || []).find((x) => x.css);
+    if (grad) {
+      decls.push(['background-image', grad.css]);
+      decls.push(['-webkit-background-clip', 'text']);
+      decls.push(['background-clip', 'text']);
+      decls.push(['color', 'transparent']);
+    }
+  }
   return decls;
 }
 
